@@ -9,13 +9,19 @@ class RobotNavigator(Node):
     def __init__(self):
         super().__init__('robot_navigator')
         self.navigator = BasicNavigator()
-
+        
         # Subscribe to order status updates
         self.order_subscriber = self.create_subscription(
-            OrderStatus, '/order_status', self.process_orders, 10)
+            OrderStatus, '/order_status', self.update_order_status, 10)
+        # Publisher
+        self.order_publisher = self.create_publisher(OrderStatus, '/order_status', 10)
 
-        self.orders = {}  # Dictionary to store order states
+        self.g_table_number = None
+        self.g_status = None
+        self.orders = {}
+
         self.get_logger().info("Robot Navigator is now active.")
+        self.navigator.waitUntilNav2Active()
 
         # Define key locations
         self.poses = {
@@ -34,39 +40,47 @@ class RobotNavigator(Node):
         pose.pose.position.x = x
         pose.pose.position.y = y
         return pose
-
-    def process_orders(self,msg):
+    
+    def process_orders(self):
         """Process order status updates"""
-        self.deliver_order(int(msg.table_number))
-        if msg.status == "canceled":
-            self.handle_cancellation(int(msg.table_number))
+        # Get the latest order status
+        self.get_logger().warn(f"process_orders")
+        #table_number, status = self.update_order_status()  # Calling update function here
+        # if self.g_table_number is None or self.g_status is None:
+        #     return  # No new order to process
+        # elif self.g_status == "pending":
+        self.deliver_order()
+        if self.g_status == "canceled":
+            self.handle_cancellation(self.g_table_number)
+        self.get_logger().info(f"process_orders {self.g_table_number} → {self.g_status}")
 
-    def deliver_order(self, table_number):
+    def deliver_order(self):
         """Handles full delivery flow with timeout and home return"""
-        self.get_logger().info(f"Processing order for Table {table_number}...")
+        #self.get_logger().info(f"Processing order for Table {table_number}...")
+        self.get_logger().warn(f"deliver_order {self.g_table_number} → {self.g_status}")
 
         # Step 1: Go to Kitchen
-        if not self.navigate_to("kitchen"):
-            return self.return_home()
+        self.navigate_to("kitchen")
 
         # Step 2: Wait for kitchen confirmation (10 sec timeout)
-        if not self.check_confirmation(table_number, 10):
-            self.get_logger().info(f"Order for Table {table_number} timed out. Returning home.")
+        if not self.check_confirmation():
+            self.get_logger().info(f"check_confirmation Table {self.g_table_number} → {self.g_status}")
+            self.get_logger().info(f"Order for Table {self.g_table_number} timed out. Returning home.")
             return self.return_home()
 
         # Step 3: Go to the table
-        table_key = f"table{table_number}"
+        table_key = f"table{self.g_table_number}"
         if not self.navigate_to(table_key):
             return self.return_home()
 
         # Step 4: Check confirmation at table
-        if not self.check_confirmation(table_number, 10):
-            self.get_logger().info(f"Customer at Table {table_number} did not confirm. Returning home.")
-            return self.return_home()
+        if not self.check_confirmation():
+            self.get_logger().info(f"Customer at Table {self.g_table_number} did not confirm. Returning kitchen.")
+            return self.navigate_to("kitchen")
 
         # Step 5: Order complete → Return home
-        self.get_logger().info(f"Order for Table {table_number} completed. Returning home.")
-        self.update_order_status(table_number, "completed")
+        self.get_logger().info(f"Order for Table {self.g_table_number} completed. Returning home.")
+        self.publish_status(self.g_table_number, "completed")
         self.return_home()
 
     def handle_cancellation(self, table_number):
@@ -97,13 +111,17 @@ class RobotNavigator(Node):
             self.get_logger().error(f"Failed to reach {location}.")
             return False
 
-    def check_confirmation(self, table_number, status ,timeout_sec=10):
+    def check_confirmation(self, timeout_sec=10):
         """Simulates confirmation with a timeout"""
-        self.get_logger().info(f"Waiting {timeout_sec} seconds for confirmation at Table {table_number}...")
+        self.get_logger().info(f"Waiting {timeout_sec} seconds for confirmation at Table {self.g_table_number}...")
         time.sleep(timeout_sec)
-        if status == "confirmed":
+        if self.g_status == "confirmed":
+            self.get_logger().warn(f"{self.g_status} true")
+            self.g_status = "pending"
+            self.publish_status(self.g_table_number, "pending")
             return True
         else:
+            self.get_logger().warn(f"{self.g_status} false")
             return False
 
     def return_home(self):
@@ -111,20 +129,39 @@ class RobotNavigator(Node):
         self.get_logger().info("Returning home.")
         self.navigate_to("home")
 
-    def update_order_status(self, table_number, status):
+    def publish_status(self, table_number, status):
+        """Publishes order status updates."""
+        status_msg = OrderStatus()
+        status_msg.table_number = table_number
+        status_msg.status = status
+        self.order_publisher.publish(status_msg)
+        self.get_logger().info(f"Published status: {table_number} -> {status}")
+
+    def update_order_status(self,msg):
         """Updates order status"""
+        table_number = msg.table_number  # Extract table number correctly
+        status = msg.status  # Extract status correctly
         self.orders[str(table_number)] = status
+        
+        # Ensure proper message format
         order_status_msg = OrderStatus()
-        order_status_msg.table_number = list(self.orders.keys())
-        order_status_msg.status = list(self.orders.values())
-        self.get_logger().info(f"Updated order status: {self.orders}")
+        order_status_msg.table_number = table_number  # Keep as int
+        order_status_msg.status = status # Keep as string
+        self.g_table_number = table_number
+        self.g_status = status
+        # Print only the required details
+        self.get_logger().warn(f"Updated order status: Table {table_number} → {status}")
+        self.process_orders()
+        #return self.g_table_number, self.g_status  # Always return the latest order status
+
+
 
 
 def main(args=None):
     rclpy.init(args=args)
-    robot_navigator = RobotNavigator()
-    rclpy.spin(robot_navigator)
-    robot_navigator.destroy_node()
+    node = RobotNavigator()
+    rclpy.spin(node)  # Start event loop
+    node.destroy_node()
     rclpy.shutdown()
 
 if __name__ == '__main__':

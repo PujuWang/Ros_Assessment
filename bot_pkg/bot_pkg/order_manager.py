@@ -34,7 +34,7 @@ class OrderManager(Node):
         """Adds order and waits for confirmation."""
         if table_number in [1, 2, 3, "kitchen"]:
             self.order_queue.append(table_number)
-            self.publish_status(table_number, "waiting_for_confirmation")
+            self.publish_status(table_number, "pending")
             self.get_logger().info(f"Order placed for Table {table_number}.")
 
             # Set a confirmation timeout of 10 seconds
@@ -48,7 +48,9 @@ class OrderManager(Node):
         """Handles order confirmation."""
         table_number = msg.table_number
         confirmed = msg.status == "confirmed"
+        self.get_logger().warn(f"msg {msg.status}")
 
+        
         # if table_number in self.pending_confirmation:
         #     # Stop the timer
         #     self.destroy_timer(self.pending_confirmation[table_number])
